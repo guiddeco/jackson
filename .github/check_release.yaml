@@ -1,0 +1,74 @@
+name: Check for New Upstream Releases
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Runs every day at midnight UTC
+
+jobs:
+  check_releases:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v2
+
+      - name: Set up Git
+        run: |
+          git remote add upstream https://github.com/boxyhq/jackson.git
+          git fetch upstream
+
+      - name: Get latest release from upstream
+        id: get_release
+        run: |
+          latest_release=$(curl -s https://api.github.com/repos/boxyhq/jackson/releases/latest | jq -r '.tag_name')
+          echo "::set-output name=latest_release::$latest_release"
+
+      - name: Cache last known release
+        id: cache_release
+        uses: actions/cache@v2
+        with:
+          path: last_release.txt
+          key: last-release-cache
+          restore-keys: last-release-cache
+
+      - name: Read last known release
+        id: read_last_release
+        run: |
+          if [ -f last_release.txt ]; then
+            last_release=$(cat last_release.txt)
+          else
+            last_release=""
+          fi
+          echo "::set-output name=last_release::$last_release"
+
+      - name: Compare releases and update if new
+        id: compare_releases
+        run: |
+          if [ "${{ steps.get_release.outputs.latest_release }}" != "${{ steps.read_last_release.outputs.last_release }}" ]; then
+            echo "New release detected: ${{ steps.get_release.outputs.latest_release }}"
+            echo "${{ steps.get_release.outputs.latest_release }}" > last_release.txt
+            echo "::set-output name=new_release_detected::true"
+          else
+            echo "No new release detected"
+            echo "::set-output name=new_release_detected::false"
+          fi
+
+      - name: Update cache
+        if: steps.compare_releases.outputs.new_release_detected == 'true'
+        uses: actions/cache@v2
+        with:
+          path: last_release.txt
+          key: last-release-cache
+
+      - name: Post to Slack
+        if: steps.compare_releases.outputs.new_release_detected == 'true'
+        uses: slackapi/slack-github-action@v1.23.0
+        with:
+          payload: |
+            {
+              "channel": "#prod-monitoring-tools",
+              "username": "github-actions",
+              "text": "New Boxyhq release detected: ${{ steps.get_release.outputs.latest_release }}",
+              "icon_emoji": ":rocket:"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_3D_PARTY_NOTIFICATIONS_WEBHOOK }}
